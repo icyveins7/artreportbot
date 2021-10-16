@@ -30,8 +30,18 @@ class ARTBot(CommonBot):
         self.cuthour = 23
         self.cutmin = 59
         
+        self.startday = 0
+        self.starthour = 0
+        self.startmin = 1
+        
+        self.open = False # True: is currently open for submits, False: downtime
+        
+        # Initialize submission windows
+        self.setNextWindow()
+        
         # Start jobs
-        self.updater.job_queue.run_repeating(self.remind_job, interval=5, first=0)
+        self.updater.job_queue.run_repeating(self.remind_job, interval=60, first=0)
+        self.updater.job_queue.run_repeating(self.changeState_job, interval=60, first=0)
         
         print("ARTBot init'ed.")
         
@@ -43,24 +53,42 @@ class ARTBot(CommonBot):
         
         print("Added ARTBot's handlers.")
         
+    def setNextWindow(self):
+        self.openStart = self.getRelativeNextDatetime(self.startday, self.starthour, self.startmin)
+        self.openEnd = self.getRelativeNextDatetime(self.cutday, self.cuthour, self.cutmin)
+        
+        print("Next window is from %s to %s" % (self.openStart, self.openEnd))
+        
+    def getRelativeNextDatetime(self, day, hour, minute):
+        now = dt.datetime.now()
+        d = 0 # counter for days
+        
+        while (True):
+            if (now.weekday() + d) % 7 == day:
+                break
+            else:
+                d = d + 1
+                
+        target = now + dt.timedelta(days=d)
+        target = target.replace(hour=hour, minute=minute)
+        
+        return target
+        
     def submit(self, update, context):
         user = update.message.from_user
         
-        now = dt.datetime.utcnow()
+        now = dt.datetime.now()
         
         # Update internal history
         if user.id in self.store.keys():
             self.store[user.id].lastsubmit = now
             print("Updating %s timing to %s" % (user.id, now))
+            context.bot.send_message(chat_id = update.message.chat_id,
+                                     text = "(%d) %s: Submit received!" % (user.id, self.store[user.id].name))
             
         else:
-            self.store[user.id] = Submission(user.first_name, now)
-            print("Adding new user %s with timing %s" % (user.id, now))
-            
+            context.bot.send_message(chat_id = update.message.chat_id, text="Please register first with /name. E.g. /name Low Chun Wah Edwin")
         
-        
-        context.bot.send_message(chat_id = update.message.chat_id,
-                                 text = "(%d) %s: Submit received!" % (user.id, self.store[user.id].name))
         
         # Debug print
         print(self.store[user.id])
@@ -69,24 +97,39 @@ class ARTBot(CommonBot):
     def name(self, update, context):
         user = update.message.from_user
         
+        if len(context.args) == 0:
+            context.bot.send_message(chat_id = update.message.chat_id,
+                                     text = "Please type the command like this; e.g. /name Low Chun Wah Edwin")
+        
         # Update internal name
-        if user.id in self.store.keys():
+        elif user.id in self.store.keys():
             self.store[user.id].name = ' '.join(context.args)
             print("Updated %s name to %s" % (user.id, self.store[user.id].name))
             context.bot.send_message(chat_id = update.message.chat_id,
                                      text = "(%d) %s: Changed name!" % (user.id, self.store[user.id].name))
         else:
+            self.store[user.id] = Submission(' '.join(context.args), None)
             context.bot.send_message(chat_id = update.message.chat_id,
-                                     text = "(%d) %s: Please /submit at least once before changing name!" % (user.id, user.first_name))
-        
+                                     text = "%s has been added to the list." % self.store[user.id].name)
+            
     def remind_job(self, context: CallbackContext):
         if len(self.store.keys()) < 1:
             print("No users yet.")
-        else:
+        elif self.open:
             for userid in self.store.keys():
                 print("Reminding user %s" % (userid))
                 context.bot.send_message(chat_id = userid,
                                          text = "Reminder to update your ART!")
+        
+    def changeState_job(self, context: CallbackContext):
+        now = dt.datetime.now()
+        if not self.open and now > self.openStart:
+            print("Opening submission window!")
+            self.open = True
+        if self.open and now > self.openEnd:
+            print("Closing submission window!")
+            self.open = False
+            self.setNextWindow()
         
 #%%
 if __name__ == "__main__":
