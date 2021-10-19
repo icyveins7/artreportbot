@@ -42,6 +42,14 @@ class ARTBot(CommonBot):
         # Initialize submission windows
         self.setNextWindow()
         
+        # Add reminder times
+        self.reminderTimes = []
+        self.reminderTimes.append((1,8,0))
+        self.reminderTimes.append((1,21,0))
+        self.reminderTimes.append((1,22,0))
+        self.reminderTimes.append((1,23,0))
+        self.reminderTimes.append((1,23,30))
+        
         # Start jobs
         self.updater.job_queue.run_repeating(self.minutely_job, interval=60, first=0)
         
@@ -125,14 +133,14 @@ class ARTBot(CommonBot):
             
     #%% Jobs
     def minutely_job(self, context: CallbackContext):
-        # Reminders
+        # Reminders (debugging)
         if len(self.store.keys()) < 1:
             print("No users yet.")
         elif self.open:
             for userid in self.store.keys():
-                print("Reminding user %s" % (userid))
+                print("Repeating reminding user %s" % (userid))
                 context.bot.send_message(chat_id = userid,
-                                         text = "Reminder to update your ART!")
+                                         text = "Reminder to update your ART!") # does not work unless user initiated convo with bot beforehand
         
         # State changes for submission window
         now = dt.datetime.now()
@@ -149,6 +157,25 @@ class ARTBot(CommonBot):
                                          text = "Submission window has closed.")
             self.open = False
             self.setNextWindow()
+            
+        # Exact time reminders
+        userlist = []
+        if self.open and (now.weekday(),now.hour,now.minute) in self.reminders:
+            for userid in self.store.keys():
+                if self.store[userid].lastsubmit < self.openStart:
+                    print("Timed reminder for user %s" % userid)
+                    userlist.append(userid)
+                    context.bot.send_message(chat_id = userid,
+                                             text = "Reminder to update your ART!")
+                
+            channeltext = "Reminder to update your ARTS!\n"
+            for i in userlist:
+                mention = "["+self.store[i].name+"](tg://user?id="+str(i)+")"
+                channeltext = channeltext + mention + "\n"
+            for channel in self.channels:
+                context.bot.send_message(chat_id = channel,
+                                         text = channeltext)
+        
         
 #%%
 if __name__ == "__main__":
