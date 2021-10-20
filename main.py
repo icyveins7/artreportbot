@@ -10,23 +10,27 @@ from bot_commonHandlers import CommonBot
 from dataclasses import dataclass
 import datetime as dt
 from telegram.ext import CommandHandler, CallbackContext
+import telegram
 
 #%% Data structs
 @dataclass
 class Submission:
     name: str
     lastsubmit: dt.datetime # in UTC
+    
+weekdayStrings = {0: 'Mon', 1: 'Tue', 2: 'Wed', 3: 'Thu', 4: 'Fri', 5: 'Sat', 6: 'Sun'}
 
 #%%
 class ARTBot(CommonBot):
     def __init__(self, cutday = 1, cuthour = 23, cutmin = 59,
-                 startday = 0, starthour = 0, startmin = 1):
+                 startday = 1, starthour = 0, startmin = 1,
+                 reminderTimes = []):
         super().__init__()
         
         # Storage dict for submissions
         self.store = {}
         # Storage dict for channels
-        self.channels = set([])
+        self.channel = None
         
         # Parameters
         self.cutday = cutday # Monday is 0, Sunday is 6.
@@ -42,16 +46,11 @@ class ARTBot(CommonBot):
         # Initialize submission windows
         self.setNextWindow()
         
-        # Add reminder times
-        self.reminderTimes = []
-        self.reminderTimes.append((1,8,0))
-        self.reminderTimes.append((1,21,0))
-        self.reminderTimes.append((1,22,0))
-        self.reminderTimes.append((1,23,0))
-        self.reminderTimes.append((1,23,30))
+        # Add reminder times (tuples of (weekday, hr, min))
+        self.reminderTimes = reminderTimes
         
         # Start jobs
-        self.updater.job_queue.run_repeating(self.minutely_job, interval=60, first=0)
+        self.updater.job_queue.run_repeating(self.minutely_job, interval=10, first=0)
         
         print("ARTBot init'ed.")
         
@@ -61,6 +60,7 @@ class ARTBot(CommonBot):
         self.dispatcher.add_handler(CommandHandler('submit', self.submit))
         self.dispatcher.add_handler(CommandHandler('name', self.name))
         self.dispatcher.add_handler(CommandHandler('announce', self.announce))
+        self.dispatcher.add_handler(CommandHandler('reminders', self.reminders))
         
         print("Added ARTBot's handlers.")
         
@@ -122,62 +122,87 @@ class ARTBot(CommonBot):
         else:
             self.store[user.id] = Submission(' '.join(context.args), None)
             context.bot.send_message(chat_id = update.message.chat_id,
-                                     text = "%s has been added to the list." % self.store[user.id].name)
+                                     text = "%s has been added to the list. If you'd like direct message reminders as well, please visit https://telegram.me/seotesterbot" % self.store[user.id].name)
             
     def announce(self, update, context):
-        self.channels.add(update.message.chat_id)
-        print(self.channels)
-        for channel in self.channels:
-            context.bot.send_message(chat_id = channel,
-                                     text = "Submission window is from %s to %s." % (self.openStart, self.openEnd))
+        self.channel = update.message.chat_id
+        
+        context.bot.send_message(chat_id = self.channel,
+                                 text = "Submission window is from %s to %s." % (self.openStart, self.openEnd))
             
+    def reminders(self, update, context):
+        txt = 'Reminders will be sent at the following times:\n'
+        timings = ["%s, %2d:%2d\n" % (weekdayStrings[i[0]],i[1],i[2]) for i in self.reminderTimes]
+        timings.insert(0, txt)
+        context.bot.send_message(chat_id = update.message.chat_id,
+                                 text = ''.join(timings))
+        
     #%% Jobs
     def minutely_job(self, context: CallbackContext):
-        # Reminders (debugging)
-        if len(self.store.keys()) < 1:
-            print("No users yet.")
-        elif self.open:
-            for userid in self.store.keys():
-                print("Repeating reminding user %s" % (userid))
-                context.bot.send_message(chat_id = userid,
-                                         text = "Reminder to update your ART!") # does not work unless user initiated convo with bot beforehand
+        # # Reminders (debugging)
+        # if len(self.store.keys()) < 1:
+        #     print("No users yet.")
+        # elif self.open:
+        #     for userid in self.store.keys():
+        #         print("Repeating reminding user %s" % (userid))
+        #         context.bot.send_message(chat_id = userid,
+        #                                  text = "Reminder to update your ART!") # does not work unless user initiated convo with bot beforehand
         
         # State changes for submission window
         now = dt.datetime.now()
         if not self.open and now > self.openStart:
             print("Opening submission window!")
-            for channel in self.channels:
-                context.bot.send_message(chat_id = channel,
-                                         text = "Submission window has opened.")
+            context.bot.send_message(chat_id = self.channel,
+                                     text = "Submission window has opened.")
             self.open = True
         if self.open and now > self.openEnd:
             print("Closing submission window!")
-            for channel in self.channels:
-                context.bot.send_message(chat_id = channel,
-                                         text = "Submission window has closed.")
+            
+            context.bot.send_message(chat_id = self.channel,
+                                     text = "Submission window has closed.")
             self.open = False
             self.setNextWindow()
+            for key, val in self.store.items():
+                val.lastsubmit = None # reset all submission times to None
             
         # Exact time reminders
         userlist = []
-        if self.open and (now.weekday(),now.hour,now.minute) in self.reminders:
+        if (now.weekday(),now.hour,now.minute) in self.reminderTimes:
             for userid in self.store.keys():
-                if self.store[userid].lastsubmit < self.openStart:
-                    print("Timed reminder for user %s" % userid)
-                    userlist.append(userid)
-                    context.bot.send_message(chat_id = userid,
-                                             text = "Reminder to update your ART!")
+                if self.store[userid].lastsubmit is None:
+                    try:
+                        print("Timed reminder for user %s" % userid)
+                        userlist.append(userid)
+                        context.bot.send_message(chat_id = userid,
+                                                 text = "Reminder to update your ART!")
+                    except:
+                        print("Failed to send DM to user %s:%s" % (userid, self.store[userid].name))
                 
-            channeltext = "Reminder to update your ARTS!\n"
+            channeltext = "Reminder to update your ARTS:\n"
             for i in userlist:
                 mention = "["+self.store[i].name+"](tg://user?id="+str(i)+")"
                 channeltext = channeltext + mention + "\n"
-            for channel in self.channels:
-                context.bot.send_message(chat_id = channel,
-                                         text = channeltext)
+            
+            context.bot.send_message(chat_id = self.channel,
+                                     text = channeltext,
+                                     parse_mode = telegram.ParseMode.MARKDOWN_V2)
         
         
 #%%
 if __name__ == "__main__":
-    artbot = ARTBot()
+    reminderTimes = []
+    # # Default reminderTimes
+    # reminderTimes.append((1,7,0))
+    # reminderTimes.append((1,8,0))
+    # reminderTimes.append((1,21,0))
+    # reminderTimes.append((1,22,0))
+    # reminderTimes.append((1,23,0))
+    # reminderTimes.append((1,23,30))
+    
+    # Debug reminderTimes
+    now = dt.datetime.now()
+    later = now + dt.timedelta(minutes=1)
+    reminderTimes.append((later.weekday(), later.hour, later.minute))
+    
+    artbot = ARTBot(reminderTimes = reminderTimes)
     artbot.run()
